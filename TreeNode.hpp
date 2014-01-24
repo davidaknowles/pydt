@@ -412,7 +412,7 @@ public:
     // isZero: whether this is the very first node in the tree (above the root) so branching
     // directly from here is not allowed
     // Returns whether we successfully attached the subtree
-    bool AttachSubtree(BaseSettings& s, TreeNode* subtree, bool isZero = true) {
+  bool AttachSubtree(BaseSettings& s, TreeNode* subtree,BranchPoint &where, bool isZero = true) {
 
         if (subtree->time < time)
             return false;
@@ -422,6 +422,10 @@ public:
         if ((!isZero) && u < 0.0)
         {
             children.push_back(subtree);
+	    where.parent=this;
+	    where.child=NULL;
+	    where.time=time; 
+	    where.isExistingBranchPoint=true;
             numDescendants+=subtree->numDescendants;
             //cout << "new branch" << endl;
             return true;
@@ -439,10 +443,10 @@ public:
                     double td= s.invA(At);
                     if (td>(*i)->time) 	    {
 
-                        bool temp=(*i)->AttachSubtree(s,subtree,false);
-                        if (temp) // if the subtree was attached below us in the tree then need to update numDescendants
+		      bool temp=(*i)->AttachSubtree(s,subtree,where,false);
+		      if (temp) // if the subtree was attached below us in the tree then need to update numDescendants
                         {
-                            numDescendants+=subtree->numDescendants;
+			  numDescendants+=subtree->numDescendants;
                         }
                         return temp;
                     }
@@ -453,11 +457,15 @@ public:
                             //cout << "attached at " << td << endl;
                             TreeNode * temp = new TreeNode(td,false);
                             temp->children.push_back(*i);
+			    where.child=*i; 
                             temp->children.push_back(subtree);
                             temp->numDescendants = (*i)->numDescendants+subtree->numDescendants;
                             children.remove(*i);
                             children.push_back(temp);
                             numDescendants+=subtree->numDescendants;
+			    where.parent=this;
+			    where.time=td;
+			    where.isExistingBranchPoint=false;
                             return true;
                         }
                         else
@@ -658,12 +666,11 @@ public:
     };
 
     // Upwards sweep of belief propagation
-  double bpSweepUp2(GaussianVector &msg_up, bool isRoot)
+  double bpSweepUp2(GaussianVector &msg_up, bool isRoot,int D)
     {
-      int D=Marg_Location.size();
       if (isLeaf) {
 	msg_up = Marg_Location;
-	  return 0.0; 
+	return 0.0; 
       }
       else
         {
@@ -674,7 +681,7 @@ public:
 	  msg_up.SetToUniform(D); 
 	  for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i){
 	    GaussianVector up_msg; 
-	    ml += (*i)->bpSweepUp2(up_msg,false); // recurse down the structure
+	    ml += (*i)->bpSweepUp2(up_msg,false,D); // recurse down the structure
 	    GaussianVector norm_up=SampleAverageConditional(up_msg, (*i)->time - time); 
 	    msg_up *= norm_up; 
 	    boost::numeric::ublas::vector<double> mi=norm_up.GetMean(); 
@@ -699,6 +706,66 @@ public:
 	  return ml; 
         }
     };
+
+  double local_factor(bool excludeLast,int D,TreeNode* child_to_exclude=NULL){
+    if (isLeaf) throw 1;
+    boost::numeric::ublas::vector<double> prod_v(D), sum_m2_over_v(D);
+    prod_v &= 1.0 ;
+    sum_m2_over_v &= 0.0; 
+    GaussianVector msg_up; 
+    msg_up.SetToUniform(D); 
+    int counter=0,nchildren=children.size();
+    bool found_child_to_exclude=false; 
+    for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i){
+      if (excludeLast && counter==nchildren-1)
+	continue; 
+      if (child_to_exclude!=NULL && child_to_exclude==*i){
+	found_child_to_exclude=true;
+	continue;
+      }
+      GaussianVector norm_up=(*i)->Msg_Normal_ParentLocation; 
+      msg_up *= norm_up; 
+      boost::numeric::ublas::vector<double> mi=norm_up.GetMean(); 
+      boost::numeric::ublas::vector<double> ti=norm_up.GetVariance(); 
+      prod_v *= ti; 
+      sum_m2_over_v += mi*mi/ti; 
+      counter++;
+    }
+    if (child_to_exclude)
+      assert(found_child_to_exclude); 
+    msg_up *= Msg_Normal_Location;
+    boost::numeric::ublas::vector<double> mi=Msg_Normal_Location.GetMean(); 
+    boost::numeric::ublas::vector<double> ti=Msg_Normal_Location.GetVariance(); 
+    prod_v *= ti; 
+    sum_m2_over_v += mi*mi/ti; 
+    boost::numeric::ublas::vector<double> m =msg_up.GetMean(); 
+    boost::numeric::ublas::vector<double> v=msg_up.GetVariance(); 
+    double ml= -(double)counter*(double)D*GaussianVector::lnSqrt2Pi + .5 * ( sumVector(applyFunc(v,log)) - sumVector(applyFunc(prod_v,log)) + sumVector(m*m/v) - sumVector(sum_m2_over_v) ); 
+    assert(!isnan(ml)); 
+    return ml;
+
+  }
+
+  static double local_factor(list<GaussianVector*> &in,int D){
+    boost::numeric::ublas::vector<double> prod_v(D), sum_m2_over_v(D);
+    prod_v &= 1.0 ;
+    sum_m2_over_v &= 0.0; 
+    GaussianVector msg_up; 
+    msg_up.SetToUniform(D); 
+    for (list<GaussianVector*>::iterator i=in.begin(); i != in.end(); ++i){
+      GaussianVector* norm_up = *i; 
+      msg_up *= *norm_up; 
+      boost::numeric::ublas::vector<double> mi=norm_up->GetMean(); 
+      boost::numeric::ublas::vector<double> ti=norm_up->GetVariance(); 
+      prod_v *= ti; 
+      sum_m2_over_v += mi*mi/ti; 
+    }
+    boost::numeric::ublas::vector<double> m =msg_up.GetMean(); 
+    boost::numeric::ublas::vector<double> v=msg_up.GetVariance(); 
+    return -((double)in.size()-1.0)*(double)D*GaussianVector::lnSqrt2Pi + .5 * ( sumVector(applyFunc(v,log)) - sumVector(applyFunc(prod_v,log)) + sumVector(m*m/v) - sumVector(sum_m2_over_v) ); 
+
+  }
+
 
 
     // Downward sweep of belief propagation

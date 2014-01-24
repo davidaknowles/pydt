@@ -151,12 +151,12 @@ public:
 
     // Try to attach the subtree using the generative process
     // Return whether this was successful
-    bool AttachSubtree(BaseSettings& s, TreeNode* subtree, int maxTries = 100) {
+  bool AttachSubtree(BaseSettings& s, TreeNode* subtree, BranchPoint &where, int maxTries = 100) {
         bool success=false; // whether we have been successful yet
         // try up to maxTries times to attach the subtree
         for (int j=0; j<maxTries && !success; j++)
         {
-            success = zero->AttachSubtree(s,subtree,true);
+	  success = zero->AttachSubtree(s,subtree,where,true);
         }
         // The root may have changed, update this
         if (success)
@@ -235,7 +235,7 @@ public:
       GaussianVector temp;         
       boost::numeric::ublas::vector<double> zeros(s.D);
       zeros &= 0.0;
-      double ml = root->bpSweepUp2(temp,true); 
+      double ml = root->bpSweepUp2(temp,true,s.D); 
       return ml; // + sumVector(temp.GetLogProb(zeros)); 
     }
 

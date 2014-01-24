@@ -123,15 +123,54 @@ Tree* MH(Tree* tree, list<boost::numeric::ublas::vector<double> > &x_star, BaseS
         tree->countLeaves(true);
         Tree* newTree = tree->DeepCopy();
         TreeNode* subtree = newTree->GetUniformRandomSubtree(settings);
-
+	
         double oldAttachmentProb = newTree->GetProbOfAttachSubtree(settings, subtree);
 
         subtreeSizeCounter += subtree->countLeaves();
         newTree->DetachSubtree(subtree);
 
-        bool success=newTree->AttachSubtree(settings,subtree);
+	double mlRemaining=newTree->MarginalLikelihoodOnly(settings); // get up and down messages
+	BranchPoint where; 
+        bool success=newTree->AttachSubtree(settings,subtree,where);
         if (success)
         {
+	  double newMlCheck; 
+	  GaussianVector temp(settings.D);
+	  double subtreeML = subtree->bpSweepUp2(temp,false,settings.D); 
+	  if (where.isExistingBranchPoint){
+	    subtree->Msg_Normal_ParentLocation = SampleAverageConditional(temp,subtree->time - where.parent->time); 
+	    double diff= where.parent->local_factor(false,settings.D) - where.parent->local_factor(true,settings.D); 
+	    newMlCheck = diff + subtreeML + mlRemaining; 
+	    cout << " newMlcheck: " << newMlCheck << " newMl " << newTree->MarginalLikelihoodOnly(settings) << endl;
+	  } else {
+	    // remove contribution from p_i in pi_l, imagining it was root
+	    // add contribution from p_i in newtree, with p_l as root
+	    // add contribution from p_l in newtree, as root
+	    TreeNode* new_node= where.parent->children.back(); 
+	    new_node->Msg_Normal_ParentLocation = where.child->Msg_Normal_ParentLocation; 
+	    double old_pi_contribution; 
+	    double new_pi_contribution; 
+	    if (where.parent->time==0.0){ // attached directly below the root! 
+	      boost::numeric::ublas::vector<double> zeros(settings.D);
+	      zeros &= 0.0;
+	      old_pi_contribution = sumVector(where.child->Msg_Normal_ParentLocation.GetLogProb(zeros)); 
+	      new_pi_contribution = 0.0; 
+	    } else {
+	      old_pi_contribution = where.parent->local_factor(false,settings.D); 
+	      new_pi_contribution = where.parent->local_factor(true,settings.D); 
+	    }
+	    GaussianVector wp_to_norm = where.parent->Marg_Location / where.child->Msg_Normal_ParentLocation; 
+	    new_node->Msg_Normal_Location = SampleAverageConditional(wp_to_norm, new_node->time - where.parent->time) ;
+	    GaussianVector wc_to_norm = where.child->Marg_Location / where.child->Msg_Normal_Location; 
+	    where.child->Msg_Normal_ParentLocation = SampleAverageConditional(wc_to_norm, where.child->time - new_node->time); 
+	    subtree->Msg_Normal_ParentLocation = SampleAverageConditional(temp,subtree->time - new_node->time); 
+	    double pl_contribution = new_node->local_factor(false,settings.D); 
+	    double myML = mlRemaining + subtreeML + new_pi_contribution + pl_contribution - old_pi_contribution; 
+	    if (isnan(myML)) throw 1; 
+	    assert( abs(myML - newTree->MarginalLikelihoodOnly(settings)) < 0.001); 
+	    cout << " myML " << myML << " true " << newTree->MarginalLikelihoodOnly(settings) << endl;
+	  }
+
             double newAttachmentProb = newTree->GetProbOfAttachSubtree(settings,subtree);
             assert(tree->root->numDescendants==newTree->root->numDescendants);
             double newMl = newTree->MarginalLikelihood(settings);
@@ -220,6 +259,16 @@ Tree* SliceSample(Tree* tree, list<boost::numeric::ublas::vector<double> > &x_st
         BranchPoint originalPosition;
         tree->DetachSubtree(subtree,&originalPosition);
 
+	Tree* remainingTree = tree->DeepCopy(); 
+
+	// calculate forwards and backwards messages on the remaining tree
+	double mlRemaining = remainingTree->MarginalLikelihoodOnly(settings); 
+	assert( abs(mlRemaining - tree->MarginalLikelihoodOnly(settings)) < 0.001 ); 
+	
+	// upwards sweep on the subtree
+	GaussianVector msg_from_subtree(settings.D);
+	double subtreeML = subtree->bpSweepUp2(msg_from_subtree,false,settings.D); 
+
         if (originalPosition.isExistingBranchPoint)
         {
             logu -= log(settings.nodeWidth); // we represent atoms of mass m as rectangles of width nodeWidth and height m/nodeWidth
@@ -243,7 +292,8 @@ Tree* SliceSample(Tree* tree, list<boost::numeric::ublas::vector<double> > &x_st
 
             // this does the shrinking as well
             BranchPoint bp = tree->SampleFromSlice(settings,topOfSlice,originalPosition,subtree->time,length,numNodes);
-
+	    if (bp.isExistingBranchPoint)
+	      assert( bp.child->time > 0.0); 
             if (!settings.multifurcating())
                 assert( !bp.isExistingBranchPoint ); 
 
@@ -251,6 +301,43 @@ Tree* SliceSample(Tree* tree, list<boost::numeric::ublas::vector<double> > &x_st
             oldSlice = length;
             assert( tree->zero->children.size() == 1);
 
+	    assert( abs(mlRemaining - tree->MarginalLikelihoodOnly(settings)) < 0.001 ); 
+
+	    // fast calculation [note we want to do this BEFORE attaching]
+	    double myML; 
+	    if (bp.isExistingBranchPoint){
+	      TreeNode* atnode=bp.child; 
+	      double old_contrib = atnode->local_factor(false,settings.D);
+	      atnode->children.push_back(subtree); 
+	      subtree->Msg_Normal_ParentLocation = SampleAverageConditional(msg_from_subtree,subtree->time - atnode->time); 
+	      double new_contrib = atnode->local_factor(false,settings.D);
+	      myML=subtreeML + mlRemaining + new_contrib - old_contrib; 
+	      atnode->children.pop_back();
+	      assert(!isnan(myML));
+	    } else {
+	      double old_pi_contribution,new_pi_contribution;
+	      if (bp.parent->time==0.0){
+		boost::numeric::ublas::vector<double> zeros(settings.D);
+		zeros &= 0.0;
+		old_pi_contribution = sumVector(bp.child->Msg_Normal_ParentLocation.GetLogProb(zeros)); 
+		new_pi_contribution = 0.0; 
+	      } else {
+		old_pi_contribution = bp.parent->local_factor(false,settings.D); 
+		// want parent WITHOUT bp.child included
+		new_pi_contribution = bp.parent->local_factor(false,settings.D,bp.child);
+	      }
+	      TreeNode* new_node=new TreeNode(bp.time,false); 
+	      GaussianVector wp_to_norm = bp.parent->Marg_Location / bp.child->Msg_Normal_ParentLocation; 
+	      new_node->Msg_Normal_Location = SampleAverageConditional(wp_to_norm, new_node->time - bp.parent->time) ;
+	      GaussianVector wc_to_norm = bp.child->Marg_Location / bp.child->Msg_Normal_Location; 
+	      new_node->children.push_back(subtree); 
+	      subtree->Msg_Normal_ParentLocation = SampleAverageConditional(msg_from_subtree,subtree->time - new_node->time);
+	      TreeNode* bp_child_copy = new TreeNode(bp.child->time, bp.child->isLeaf); 
+	      bp_child_copy->Msg_Normal_ParentLocation = SampleAverageConditional(wc_to_norm, bp.child->time - new_node->time); 
+	      new_node->children.push_back(bp_child_copy); 
+	      double pl_contribution = new_node->local_factor(false,settings.D); 
+	      myML = subtreeML + mlRemaining + new_pi_contribution + pl_contribution - old_pi_contribution; 
+	    }
             bp.AttachSubtree(subtree, settings);
 
             tree->root=tree->zero->children.front();
@@ -259,6 +346,11 @@ Tree* SliceSample(Tree* tree, list<boost::numeric::ublas::vector<double> > &x_st
             assert( numLeaves == tree->countLeaves() );
 
             double newMl = tree->MarginalLikelihood(settings);
+
+	    double check=tree->MarginalLikelihoodOnly(settings); 
+	    assert( abs( myML - check ) < 0.001 ); 
+	    
+
             assert(!isnan(newMl));
 
             attempts++;
