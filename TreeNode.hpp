@@ -135,6 +135,9 @@ public:
     // List of children
     list<TreeNode*> children;
 
+  // Ideally we wouldn't store this but makes some operations much easier
+  TreeNode* parent; 
+
     // Number of leaf nodes found down the tree from here
     int numDescendants;
 
@@ -167,6 +170,14 @@ public:
         label="";
         node_event = 0.0;
     };
+
+  void SetupParents(TreeNode* theparent, bool check=false){
+    if (check)
+      assert(parent==theparent); 
+    parent=theparent; 
+    for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i)
+      (*i)->SetupParents(this,check); 
+  }
 
     // Check that the BP messages are consistent with the marginal
     void CheckConsistency()
@@ -295,6 +306,7 @@ public:
                         originalPosition->isExistingBranchPoint=false;
                     }
                     TreeNode* toreturn= children.front();
+		    toreturn->parent=parent; 
                     delete this;
                     return toreturn;
                 }
@@ -536,10 +548,59 @@ public:
         }
         // append the divergence time
         // note that some plotting packages expect time-parentTime here.
-        res += ":" + boost::lexical_cast<string>(time-parentTime);
+        res += ":" + boost::lexical_cast<string>(time) + "-" + boost::lexical_cast<string>(parentTime);
 
         return res;
     };
+
+    string newick_struct(BaseSettings &settings)
+    {
+        string res; // result string
+        if (isLeaf) // just put the label if this is a leaf
+        {
+            res = label;
+        }
+        else // build up the string
+        {
+            res = "(";
+            for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); )
+            {
+                res += (*i)->newick_struct(settings);
+                ++i;
+                if (i != children.end())
+                    res += ",";
+            }
+            res += ")";
+        }
+        res += ":" + boost::lexical_cast<string>(LocalEvidenceStructure(settings)); 
+
+        return res;
+    };
+
+  string newick_times_evidence(double parenttime, BaseSettings &settings)
+    {
+        string res; // result string
+        if (isLeaf) // just put the label if this is a leaf
+        {
+            res = label;
+        }
+        else // build up the string
+        {
+            res = "(";
+            for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); )
+            {
+	      res += (*i)->newick_times_evidence(time,settings);
+                ++i;
+                if (i != children.end())
+                    res += ",";
+            }
+            res += ")";
+        }
+        res += ":" + boost::lexical_cast<string>(LocalEvidenceTimes(parenttime,settings)); 
+
+        return res;
+    };
+
 
     // Output tree in newick format (structure only)
     string newick()
@@ -606,6 +667,7 @@ public:
         if (check && (leaves != numDescendants))
         {
             cerr << "Number of leaves: " << leaves << " cached number=" << numDescendants << endl;
+	    cout << newick() << endl; 
             throw 1;
         }
         else if (check && childrenCount==1)
@@ -665,48 +727,64 @@ public:
         if (isnan(Msg_Normal_ParentLocation.Precision[0])) throw 1;
     };
 
-    // Upwards sweep of belief propagation
-  double bpSweepUp2(GaussianVector &msg_up, bool isRoot,int D)
+    // Upwards sweep of belief propagation starting at subtree attachment or detachment
+    void bpSweepUp(int numDescendantsToAdd)
     {
-      if (isLeaf) {
-	msg_up = Marg_Location;
-	return 0.0; 
+      if (parent!=NULL){
+        parent->Marg_Location /= Msg_Normal_ParentLocation; // remove the current contribution
+	// calculate the new message
+	Msg_Normal_ParentLocation = SampleAverageConditional(isLeaf ? Marg_Location : (Marg_Location / Msg_Normal_Location), time-parent->time);
+	// update the parent marginal
+        parent->Marg_Location *= Msg_Normal_ParentLocation;
+	parent->numDescendants += numDescendantsToAdd; 
+        assert(!isnan(Msg_Normal_ParentLocation.Precision[0])); 
+	parent->bpSweepUp(numDescendantsToAdd); 
       }
-      else
-        {
-	  double ml=0.0;
-	  boost::numeric::ublas::vector<double> prod_v(D), sum_m2_over_v(D);
-	  prod_v &= 1.0 ;
-	  sum_m2_over_v &= 0.0; 
-	  msg_up.SetToUniform(D); 
-	  for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i){
-	    GaussianVector up_msg; 
-	    ml += (*i)->bpSweepUp2(up_msg,false,D); // recurse down the structure
-	    GaussianVector norm_up=SampleAverageConditional(up_msg, (*i)->time - time); 
-	    msg_up *= norm_up; 
-	    boost::numeric::ublas::vector<double> mi=norm_up.GetMean(); 
-	    boost::numeric::ublas::vector<double> ti=norm_up.GetVariance(); 
-	    prod_v *= ti; 
-	    sum_m2_over_v += mi*mi/ti; 
-	  }
-	  if (isRoot){
-	    GaussianVector prior;
-	    prior.SetToUniform(D); 
-	    prior.Precision &= 1.0 / time; 
-	    msg_up *= prior; 
-	    boost::numeric::ublas::vector<double> mi=prior.GetMean(); 
-	    boost::numeric::ublas::vector<double> ti=prior.GetVariance(); 
-	    prod_v *= ti; 
-	    sum_m2_over_v += mi*mi/ti; 
-	  }
-	  boost::numeric::ublas::vector<double> m =msg_up.GetMean(); 
-	  boost::numeric::ublas::vector<double> v=msg_up.GetVariance(); 
-	  ml += -((double)children.size()- (isRoot?0.0:1.0))*(double)D*GaussianVector::lnSqrt2Pi + .5 * ( sumVector(applyFunc(v,log)) - sumVector(applyFunc(prod_v,log)) + sumVector(m*m/v) - sumVector(sum_m2_over_v) ); 
-	  if (isnan(ml)) throw 1; 
-	  return ml; 
-        }
     };
 
+
+    // Upwards sweep of belief propagation
+  double bpSweepUp2(GaussianVector &msg_up, bool isRoot,int D)
+  {
+    if (isLeaf) {
+      msg_up = Marg_Location;
+      return 0.0; 
+    }
+    else
+      {
+	double ml=0.0;
+	boost::numeric::ublas::vector<double> prod_v(D), sum_m2_over_v(D);
+	prod_v &= 1.0 ;
+	sum_m2_over_v &= 0.0; 
+	msg_up.SetToUniform(D); 
+	for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i){
+	  GaussianVector up_msg; 
+	  ml += (*i)->bpSweepUp2(up_msg,false,D); // recurse down the structure
+	  GaussianVector norm_up=SampleAverageConditional(up_msg, (*i)->time - time); 
+	  msg_up *= norm_up; 
+	  boost::numeric::ublas::vector<double> mi=norm_up.GetMean(); 
+	  boost::numeric::ublas::vector<double> ti=norm_up.GetVariance(); 
+	  prod_v *= ti; 
+	  sum_m2_over_v += mi*mi/ti; 
+	}
+	if (isRoot){
+	  GaussianVector prior;
+	  prior.SetToUniform(D); 
+	  prior.Precision &= 1.0 / time; 
+	  msg_up *= prior; 
+	  boost::numeric::ublas::vector<double> mi=prior.GetMean(); 
+	  boost::numeric::ublas::vector<double> ti=prior.GetVariance(); 
+	  prod_v *= ti; 
+	  sum_m2_over_v += mi*mi/ti; 
+	}
+	boost::numeric::ublas::vector<double> m =msg_up.GetMean(); 
+	boost::numeric::ublas::vector<double> v=msg_up.GetVariance(); 
+	ml += -((double)children.size()- (isRoot?0.0:1.0))*(double)D*GaussianVector::lnSqrt2Pi + .5 * ( sumVector(applyFunc(v,log)) - sumVector(applyFunc(prod_v,log)) + sumVector(m*m/v) - sumVector(sum_m2_over_v) ); 
+	if (isnan(ml)) throw 1; 
+	return ml; 
+      }
+  };
+  
   double local_factor(bool excludeLast,int D,TreeNode* child_to_exclude=NULL){
     if (isLeaf) throw 1;
     boost::numeric::ublas::vector<double> prod_v(D), sum_m2_over_v(D);
@@ -778,7 +856,7 @@ public:
         else
         {
             Marg_Location /= Msg_Normal_Location; // remove the current contribution
-            // calculate the new message
+            // calculate the ne message
             Msg_Normal_Location = SampleAverageConditional(parent.Marg_Location / Msg_Normal_ParentLocation, time-parent.time);
             Marg_Location *= Msg_Normal_Location; // add in new contribution
             for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i)
@@ -808,73 +886,106 @@ public:
         }
     };
 
+  double LocalEvidenceTimes(double parent_time, BaseSettings &settings){
+    double lnEvidence = 0.0;
+    if (!isLeaf)
+      {
+	lnEvidence += (settings.A(parent_time) - settings.A(time))*settings.H(numDescendants-1);
+	lnEvidence += log(settings.a(time));
+      }
+    assert(!isnan(lnEvidence));
+    return lnEvidence;
+  }
+
+  double LocalEvidenceStructure(BaseSettings &settings){
+    double lnEvidence = 0.0;
+    if (!isLeaf)
+      {
+	// is this correct?
+	int l=1;
+	for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i)
+	  {
+	    if (l >= 3)
+	      lnEvidence += log(settings.theta+((double)l-1.0)*settings.alpha);
+	    lnEvidence += lgamma((*i)->numDescendants-settings.alpha);
+	    l++;
+	  }
+	lnEvidence -= lgamma(numDescendants+settings.theta);
+	int numBranches = l - 1; 
+	lnEvidence -= ((double)numBranches-1.0)*lgamma(1.0-settings.alpha);
+      }
+    assert(!isnan(lnEvidence));
+    return lnEvidence;
+  }
+
     // log evidence contribution for the structure and divergence times
-    double LogEvidenceStructure(TreeNode& parent, BaseSettings &settings)
+    double LogEvidenceStructure(double parent_time, BaseSettings &settings)
     {
-        double lnEvidence = 0.0;
-
-        if (!isLeaf)
-        {
-            // is this correct?
-            lnEvidence += (settings.A(parent.time) - settings.A(time))*settings.H(numDescendants-1);
-            lnEvidence += log(settings.a(time));
-            int l=1;
-            for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i)
-            {
-                if (l >= 3)
-                    lnEvidence += log(settings.theta+((double)l-1.0)*settings.alpha);
-                lnEvidence += lgamma((*i)->numDescendants-settings.alpha);
-                lnEvidence += (*i)->LogEvidenceStructure(*this, settings);
-                l++;
-            }
-            lnEvidence -= lgamma(numDescendants+settings.theta);
-            int numBranches = l - 1;
-            lnEvidence -= ((double)numBranches-1.0)*lgamma(1.0-settings.alpha);
-        }
-        if (isnan(lnEvidence))
-            throw 1;
-        return lnEvidence;
+      double lnEvidence = LocalEvidenceStructure(settings); 
+      lnEvidence += LocalEvidenceTimes(parent_time,settings); 
+      for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i)
+	lnEvidence += (*i)->LogEvidenceStructure(time, settings);
+      return lnEvidence;
     }
 
-    double LogEvidenceTimes(TreeNode& parent, BaseSettings &settings)
+  // additional_descendants is used to simulated the effect of adding a subtree
+  double LogEvidenceStructureUp(BaseSettings &settings,int additional_descendants)
     {
-        double lnEvidence = 0.0;
-
-        if (!isLeaf)
-        {
-            // is this correct?
-            lnEvidence += (settings.A(parent.time) - settings.A(time))*settings.H(numDescendants-1);
-            lnEvidence += log(settings.a(time));
-            int l=1;
-            for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i)
-            {
-                lnEvidence += (*i)->LogEvidenceTimes(*this, settings);
-                l++;
-            }
-        }
-        return lnEvidence;
+      double lnEvidence = 0.0; 
+      if (parent != NULL) { // i.e. stop at zero!
+	numDescendants += additional_descendants; 
+	lnEvidence += LocalEvidenceStructure(settings); 
+	lnEvidence += LocalEvidenceTimes(parent->time,settings); 
+	lnEvidence += parent->LogEvidenceStructureUp(settings,additional_descendants);
+	numDescendants -= additional_descendants; 
+      }
+      return lnEvidence;
     }
 
-    double LogEvidenceStructureOnly(TreeNode& parent, BaseSettings &settings)
+  double LogEvidenceStructureOnlyUp(BaseSettings &settings,int additional_descendants)
     {
-        double lnEvidence = 0.0;
+      double lnEvidence = 0.0; 
+      if (parent != NULL) { // i.e. stop at zero!
+	numDescendants += additional_descendants; 
+	cout << "Up: " << LocalEvidenceStructure(settings) << "add: " << additional_descendants << endl; 
+	lnEvidence += LocalEvidenceStructure(settings); 
+	lnEvidence += parent->LogEvidenceStructureOnlyUp(settings,additional_descendants);
+	numDescendants -= additional_descendants; 
+      }
+      return lnEvidence;
+    }
 
-        if (!isLeaf)
-        {
-            // is this correct?
-            int l=1;
-            for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i)
-            {
-                if (l >= 3)
-                    lnEvidence += log(settings.theta+((double)l-1.0)*settings.alpha);
-                lnEvidence += lgamma((*i)->numDescendants-settings.alpha);
-                lnEvidence += (*i)->LogEvidenceStructureOnly(*this, settings);
-                l++;
-            }
-            lnEvidence -= lgamma(numDescendants+settings.theta);
-            lnEvidence -= (l-1.0)*lgamma(1.0-settings.alpha);
-        }
-        return lnEvidence;
+  double LogEvidenceTimesOnlyUp(BaseSettings &settings,int additional_descendants)
+    {
+      double lnEvidence = 0.0; 
+      if (parent != NULL) { // i.e. stop at zero!
+	numDescendants += additional_descendants; 
+	lnEvidence += LocalEvidenceTimes(parent->time,settings); 
+	cout << "Time up: " << LocalEvidenceTimes(parent->time,settings) << " add " << additional_descendants << endl; 
+	lnEvidence += parent->LogEvidenceTimesOnlyUp(settings,additional_descendants);
+	numDescendants -= additional_descendants; 
+      }
+      return lnEvidence;
+    }
+
+
+    double LogEvidenceTimes(double parent_time, BaseSettings &settings)
+    {
+      double lnEvidence = LocalEvidenceTimes(parent_time,settings); 
+      cout << "time: " << time << " parent: " << parent_time << " ev: " << lnEvidence << endl; 
+      if (!isLeaf)
+	for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i)
+	  lnEvidence += (*i)->LogEvidenceTimes(time, settings);
+      return lnEvidence;
+    }
+
+    double LogEvidenceStructureOnly(BaseSettings &settings)
+    {
+      double lnEvidence = LocalEvidenceStructure(settings);
+      if (!isLeaf)
+	for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i)
+	  lnEvidence += (*i)->LogEvidenceStructureOnly(settings);
+      return lnEvidence;
     }
 
     // log evidence contribution of the locations, calculated EP style (probably can do this more straightforwardly!)
@@ -1386,34 +1497,59 @@ void BranchPoint::AttachSubtree(TreeNode* subtree, BaseSettings& settings)
     {
         child->numDescendants+=subtree->numDescendants;
         child->children.push_back(subtree);
+	subtree->parent=child; 
+	subtree->Msg_Normal_ParentLocation = SampleAverageConditional(subtree->Marg_Location / subtree->Msg_Normal_Location, subtree->time - child->time); 
+	child->Marg_Location *= subtree->Msg_Normal_ParentLocation; 
+	child->bpSweepUp(subtree->numDescendants);
+	
+	subtree->bpSweepDown(*child); // this will update subtree->Msg_Normal_Location
         // optionally we resample the location of the parent since the addition of the subtree may have a
         // large effect on its location
-        if (settings.ResampleAttachmentLocation)
-        {
+        if (settings.ResampleAttachmentLocation){
             GaussianVector marg=SampleAverageConditional(parent->Marg_Location, child->time - parent->time);
             for (list<TreeNode*>::iterator i=child->children.begin(); i != child->children.end(); ++i)
-            {
-                marg *= SampleAverageConditional((*i)->Marg_Location, (*i)->time-child->time);
-            }
-            child->Marg_Location.SetPoint(marg.Sample(settings.gen));
+	      marg *= SampleAverageConditional((*i)->Marg_Location, (*i)->time-child->time);
+	    child->Marg_Location.SetPoint(marg.Sample(settings.gen));
         }
     }
     else
     {
-        TreeNode *temp = new TreeNode(time,false);
-        temp->children.push_back(child);
-        temp->children.push_back(subtree);
-        temp->numDescendants = child->numDescendants+subtree->numDescendants;
+        TreeNode *new_node = new TreeNode(time,false);
+        new_node->children.push_back(child);
+	child->parent=new_node; 
+        new_node->children.push_back(subtree);
+	subtree->parent=new_node; 
+        new_node->numDescendants = child->numDescendants+subtree->numDescendants;
         parent->children.remove(child);
-        parent->children.push_back(temp);
-        parent->numDescendants+=subtree->numDescendants;
+        parent->children.push_back(new_node);
+	new_node->parent=parent; 
+        
         // to continue sampling subtree locations we need to sample a location for this new node
-        GaussianVector msg[3];
-        msg[0]=SampleAverageConditional(subtree->Marg_Location, subtree->time - time);
-        msg[1]=SampleAverageConditional(child->Marg_Location, child->time - time);
-        msg[2]=SampleAverageConditional(parent->Marg_Location, time - parent->time);
-        GaussianVector prod = msg[0] * msg[1] * msg[2];
-        temp->Marg_Location.SetPoint(prod.Sample(settings.gen));
+	// TODO: don't do this if integrating! 
+	if (0){
+	  parent->numDescendants+=subtree->numDescendants;
+	  GaussianVector msg[3];
+	  msg[0]=SampleAverageConditional(subtree->Marg_Location, subtree->time - time);
+	  msg[1]=SampleAverageConditional(child->Marg_Location, child->time - time);
+	  msg[2]=SampleAverageConditional(parent->Marg_Location, time - parent->time);
+	  GaussianVector prod = msg[0] * msg[1] * msg[2];
+	  new_node->Marg_Location.SetPoint(prod.Sample(settings.gen));
+	} else {
+	  // oh god there are a lot of connections to get right here...
+	  GaussianVector wp_to_norm = parent->Marg_Location / child->Msg_Normal_ParentLocation; 
+	  new_node->Msg_Normal_Location = SampleAverageConditional(wp_to_norm, new_node->time - parent->time);
+	  GaussianVector wc_to_norm = child->Marg_Location / child->Msg_Normal_Location; 
+	  subtree->Msg_Normal_ParentLocation = SampleAverageConditional(subtree->Marg_Location / subtree->Msg_Normal_Location, subtree->time - new_node->time);
+	  child->Msg_Normal_ParentLocation = SampleAverageConditional(wc_to_norm, child->time - new_node->time); 
+	  new_node->Marg_Location = new_node->Msg_Normal_Location * subtree->Msg_Normal_ParentLocation * child->Msg_Normal_ParentLocation;
+	  new_node->Msg_Normal_ParentLocation = SampleAverageConditional(subtree->Msg_Normal_ParentLocation * child->Msg_Normal_ParentLocation, new_node->time - parent->time); 
+	  child->Marg_Location /= child->Msg_Normal_Location; 
+	  child->Msg_Normal_Location = SampleAverageConditional(new_node->Msg_Normal_Location * subtree->Msg_Normal_ParentLocation, child->time - new_node->time);
+	  child->Marg_Location *= child->Msg_Normal_Location;
+	  subtree->bpSweepDown(*new_node); 
+	  parent->numDescendants += subtree->numDescendants; 
+	  parent->bpSweepUp(subtree->numDescendants);
+	}
     }
 };
 

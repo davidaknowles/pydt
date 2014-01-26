@@ -216,6 +216,7 @@ void test_sampler(bool mh)
     Settings settings;
     settings.D=2;
     settings.theta = 0.0;
+    settings.debug=true; 
     TreeNode* root = new TreeNode(0.5,false);
     TreeNode* firstLeaf = new TreeNode(1,true);
     firstLeaf->label="0";
@@ -231,7 +232,7 @@ void test_sampler(bool mh)
     for (int i=0; i<numLeaves-2; i++)
     {
         TreeNode* leaf = new TreeNode(1.0, true);
-        leaf->label=boost::lexical_cast<string>(i+1);
+        leaf->label=boost::lexical_cast<string>(i+2);
         tree->AddChild(settings, leaf);
         leaves.push_back(leaf);
     }

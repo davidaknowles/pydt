@@ -20,7 +20,9 @@ using namespace std;
 
 class BaseSettings {
 public:
-    double theta, alpha;
+  bool debug; 
+  
+  double theta, alpha;
     int D;
 
     int PoissonEventsOnFinalEdge;
@@ -39,6 +41,7 @@ public:
     double nodeWidth;
 
     BaseSettings() {
+      debug=false; 
         theta = 1.0;
         alpha = 0.0;
         sampleTheta = true;

@@ -237,10 +237,16 @@ Tree* SliceSample(Tree* tree, list<boost::numeric::ublas::vector<double> > &x_st
 {
     int numLeaves = tree->countLeaves();
     remove(filename);
-    double ml = tree->MarginalLikelihood(settings);
     long subtreeSizeCounter = 0 ;
+    double ml=tree->MarginalLikelihood(settings);
+    tree->SetupParents(); 
     long attemptsCounter = 0;
     clock_t start_time = clock();
+    
+    // TODO: should NEVER have to do full BP sweep. 
+    // When a subtree is detached you already have it's up messages, and only the messages _up_ to the root change from the detachment position changes
+    // When the subtree is reattached, the messages _down_ the subtree change, and _up_ to the root
+
     for (int i=0; i<iterations; i++)
     {
         // slice height in log space
@@ -259,15 +265,18 @@ Tree* SliceSample(Tree* tree, list<boost::numeric::ublas::vector<double> > &x_st
         BranchPoint originalPosition;
         tree->DetachSubtree(subtree,&originalPosition);
 
-	Tree* remainingTree = tree->DeepCopy(); 
-
 	// calculate forwards and backwards messages on the remaining tree
-	double mlRemaining = remainingTree->MarginalLikelihoodOnly(settings); 
-	assert( abs(mlRemaining - tree->MarginalLikelihoodOnly(settings)) < 0.001 ); 
-	
+	double mlRemaining = tree->MarginalLikelihoodOnly(settings); 
+
 	// upwards sweep on the subtree
 	GaussianVector msg_from_subtree(settings.D);
 	double subtreeML = subtree->bpSweepUp2(msg_from_subtree,false,settings.D); 
+	double timesSubtree = subtree->LogEvidenceTimes(0.0,settings) - subtree->LocalEvidenceTimes(0.0,settings); 
+	double timesRemaining = tree->LogEvidenceTimes(settings); 
+	double structureSubtree = subtree->LogEvidenceStructureOnly(settings); 
+	double structureRemaining = tree->LogEvidenceStructureOnly(settings); 
+	if (settings.debug)
+	  assert( abs( msg_from_subtree.GetMean()[0] - ( subtree->Marg_Location / subtree->Msg_Normal_Location ).GetMean()[0] ) < 0.001); 
 
         if (originalPosition.isExistingBranchPoint)
         {
@@ -282,11 +291,9 @@ Tree* SliceSample(Tree* tree, list<boost::numeric::ublas::vector<double> > &x_st
         double oldSlice = 1e10; // used to check the slice always gets smaller
         while (true) // shrink
         {
-            // if not the first iteration then the subtree will have been attached and needs removing
-            if (!firstTime)
-                tree->DetachSubtree(subtree);
             firstTime=false;
-            tree->countLeaves(true);
+	    if (settings.debug)
+	      tree->countLeaves(true);
             double length=0.0;
             int numNodes=0;
 
@@ -295,25 +302,33 @@ Tree* SliceSample(Tree* tree, list<boost::numeric::ublas::vector<double> > &x_st
 	    if (bp.isExistingBranchPoint)
 	      assert( bp.child->time > 0.0); 
             if (!settings.multifurcating())
-                assert( !bp.isExistingBranchPoint ); 
+	      assert( !bp.isExistingBranchPoint ); 
 
             assert( length <= oldSlice );
             oldSlice = length;
             assert( tree->zero->children.size() == 1);
-
-	    assert( abs(mlRemaining - tree->MarginalLikelihoodOnly(settings)) < 0.001 ); 
-
+	    cout << tree->root->newick_times_evidence(0,settings) << endl; 
 	    // fast calculation [note we want to do this BEFORE attaching]
-	    double myML; 
+	    double myML = subtreeML + mlRemaining; 
+	    //double myPrior = priorSubtree + priorRemaining;
+	    double my_times_contribution = timesSubtree + timesRemaining; 
+	    double my_structure_contribution = structureSubtree + structureRemaining; 
 	    if (bp.isExistingBranchPoint){
 	      TreeNode* atnode=bp.child; 
 	      double old_contrib = atnode->local_factor(false,settings.D);
+	      double old_prior_contrib = atnode->LogEvidenceStructureOnlyUp(settings,0);
+	      double old_times_contrib = atnode->LogEvidenceTimesOnlyUp(settings,0); 
 	      atnode->children.push_back(subtree); 
 	      subtree->Msg_Normal_ParentLocation = SampleAverageConditional(msg_from_subtree,subtree->time - atnode->time); 
 	      double new_contrib = atnode->local_factor(false,settings.D);
-	      myML=subtreeML + mlRemaining + new_contrib - old_contrib; 
+	      myML += new_contrib - old_contrib; 
+	      my_structure_contribution += atnode->LogEvidenceStructureOnlyUp(settings,subtree->numDescendants) - old_prior_contrib; 
+	      my_times_contribution += atnode->LogEvidenceTimesOnlyUp(settings,subtree->numDescendants) - old_times_contrib; 
+	      cout << "Subtee new time contriB:" << subtree->LocalEvidenceTimes(atnode->time,settings) << endl; 
+	      // cout << "Old: " << subtree->LocalEvidenceTimes(originalPosition.time,settings) << endl; 
+	      my_times_contribution += subtree->LocalEvidenceTimes(atnode->time,settings); // - subtree->LocalEvidenceTimes(originalPosition.time,settings); 
+	      //myPrior += my_structure_contribution; 
 	      atnode->children.pop_back();
-	      assert(!isnan(myML));
 	    } else {
 	      double old_pi_contribution,new_pi_contribution;
 	      if (bp.parent->time==0.0){
@@ -333,33 +348,61 @@ Tree* SliceSample(Tree* tree, list<boost::numeric::ublas::vector<double> > &x_st
 	      new_node->children.push_back(subtree); 
 	      subtree->Msg_Normal_ParentLocation = SampleAverageConditional(msg_from_subtree,subtree->time - new_node->time);
 	      TreeNode* bp_child_copy = new TreeNode(bp.child->time, bp.child->isLeaf); 
+	      bp_child_copy->numDescendants = bp.child->numDescendants;
 	      bp_child_copy->Msg_Normal_ParentLocation = SampleAverageConditional(wc_to_norm, bp.child->time - new_node->time); 
 	      new_node->children.push_back(bp_child_copy); 
 	      double pl_contribution = new_node->local_factor(false,settings.D); 
-	      myML = subtreeML + mlRemaining + new_pi_contribution + pl_contribution - old_pi_contribution; 
+	      myML += new_pi_contribution + pl_contribution - old_pi_contribution; 
+	      new_node->numDescendants = subtree->numDescendants + bp.child->numDescendants;
+	      my_times_contribution += new_node->LocalEvidenceTimes(bp.parent->time,settings); 
+	      my_structure_contribution += new_node->LocalEvidenceStructure(settings); 
+	      my_times_contribution += subtree->LocalEvidenceTimes(new_node->time,settings); // - subtree->LocalEvidenceTimes(originalPosition.time,settings); 
+	      my_times_contribution += bp.child->LocalEvidenceTimes(new_node->time,settings) - bp.child->LocalEvidenceTimes(bp.parent->time,settings); 
+	      my_structure_contribution -= bp.parent->LogEvidenceStructureOnlyUp(settings,0);
+	      my_times_contribution -= bp.parent->LogEvidenceTimesOnlyUp(settings,0); 
+	      bp.child->numDescendants += subtree->numDescendants; 
+	      my_structure_contribution += bp.parent->LogEvidenceStructureOnlyUp(settings,subtree->numDescendants); 
+	      my_times_contribution += bp.parent->LogEvidenceTimesOnlyUp(settings,subtree->numDescendants); 
+	      bp.child->numDescendants -= subtree->numDescendants; 
+	      //myPrior += my_structure_contribution; 
+	      delete bp_child_copy; 
+	      delete new_node; 
 	    }
-            bp.AttachSubtree(subtree, settings);
-
-            tree->root=tree->zero->children.front();
-            assert( tree->zero->children.size() == 1);
-
-            assert( numLeaves == tree->countLeaves() );
-
-            double newMl = tree->MarginalLikelihood(settings);
-
-	    double check=tree->MarginalLikelihoodOnly(settings); 
-	    assert( abs( myML - check ) < 0.001 ); 
 	    
-
-            assert(!isnan(newMl));
-
+	    assert(!isnan(myML));
+	    
             attempts++;
             assert(attempts < 1000);
 
-            if (bp.time == originalPosition.time || (newMl - (bp.isExistingBranchPoint ? log(settings.nodeWidth) : 0.0) >= logu))
+            if (bp.time == originalPosition.time || (myML - (bp.isExistingBranchPoint ? log(settings.nodeWidth) : 0.0) >= logu))
             {
-                ml=newMl;
-                break;
+	      tree->countLeaves(true);
+	      subtree->countLeaves(true,false); 
+	      cout << "Subtree: " << subtree->newick() << endl; 
+	      cout << "Remaining: " << tree->newick() << endl; 
+
+	      bp.AttachSubtree(subtree, settings);
+	      
+	      tree->root=tree->zero->children.front();
+	      cout << "Attached: " << tree->newick() << endl; 
+
+	      if (settings.debug){
+		assert(numLeaves == tree->countLeaves(true)); 
+		tree->SetupParents(true); 
+		assert( abs( myML - tree->MarginalLikelihoodOnly(settings)) < 0.001); 
+		double truePrior = tree->LogEvidenceStructure(settings); 
+		cout << "Subtree: " << subtree->newick_times_evidence(0,settings) << endl; 
+		cout << "BPisEBP : " << bp.isExistingBranchPoint << " " << bp.time << endl; 
+		cout << "Struct prior: " << my_structure_contribution << " true: " << tree->LogEvidenceStructureOnly(settings) << endl; 
+		cout << "newick times: " << tree->root->newick_times_evidence(0,settings) << endl;
+		cout << "times: " << tree->root->newick(0.0) << endl; 
+		cout << "Time prior: " << my_times_contribution << " true: " << tree->LogEvidenceTimes(settings) << endl; 
+		assert( abs(my_structure_contribution - tree->LogEvidenceStructureOnly(settings)) < 0.001); 
+		assert( abs(my_times_contribution - tree->LogEvidenceTimes(settings)) < 0.001); 
+	      }
+	      ml= myML;
+	      assert( tree->zero->children.size() == 1);
+	      break;
             }
         }
         attemptsCounter += attempts;

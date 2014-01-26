@@ -101,6 +101,7 @@ public:
         // don't need to delete the old root, this is handled by the above recursion
         zero->children.clear(); // zero's child should be the new root
         zero->children.push_back(root);
+	root->parent=zero; 
         // the cached number of descendants for zero must be updated
         zero->numDescendants=root->numDescendants;
     }
@@ -127,10 +128,15 @@ public:
         zero->Marg_Location.SetPoint(zeros);
     };
 
-    // Add a new leaf by running the generative process
-    // Returns what depth this leaf was attached at
-    int AddChild(BaseSettings& s, TreeNode* leaf) {
-        zero->numDescendants++;
+  void SetupParents(bool check=false){
+    zero->parent=NULL;
+    root->SetupParents(zero,check);
+  }
+
+  // Add a new leaf by running the generative process
+  // Returns what depth this leaf was attached at
+  int AddChild(BaseSettings& s, TreeNode* leaf) {
+    zero->numDescendants++;
         double At = exp(s.logDivergenceRateFactor(root->numDescendants))*(-log(s.fRand(0,1)));
         double td= s.invA(At);
         if (td>root->time) // don't diverge off this branch
@@ -246,27 +252,22 @@ public:
         root->bpSweepUp(*zero); // belief propagation
         root->bpSweepDown(*zero);
 	double logEvidence=root->LogEvidence(*zero); 
-	double leCheck=LogEvidenceSimple(settings); 
-	if (abs(logEvidence-leCheck) > 0.001){
-	  cout << "old: " << logEvidence << " new: " << leCheck << endl; 
-	  throw 1; 
-	}
         return logEvidence + LogEvidenceStructure(settings);
     }
 
     double LogEvidenceStructure(BaseSettings &settings) // include P(times|structure)
     {
-        return root->LogEvidenceStructure(*zero, settings) ;
+        return root->LogEvidenceStructure(0.0, settings) ;
     }
 
     double LogEvidenceStructureOnly(BaseSettings &settings) // P(structure), no times
     {
-        return root->LogEvidenceStructureOnly(*zero, settings) ;
+        return root->LogEvidenceStructureOnly(settings) ;
     }
 
     double LogEvidenceTimes(BaseSettings &settings)
     {
-        return root->LogEvidenceTimes(*zero, settings) ;
+        return root->LogEvidenceTimes(0.0, settings) ;
     }
 
     // Calculate the marginal likelihood of this tree structure
