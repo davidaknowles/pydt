@@ -476,30 +476,37 @@ void depth_as_func_of_n(Settings &settings, int maxN = 1e4, int repeats=100)
 
 int main (int argc,char *argv[]) {
 
-    //Settings settings;
-     // if (argc < 6)
-     // {
-     //     cout << "Not enough inputs, usage is" << endl;
-     //     cout << "ts mh(rather than slice) theta datafile namesfile iterations flat(rather than random) seed" << endl;
-     //     return 1;
-     // }
+    Settings settings;
+     if (argc < 6)
+     {
+         cout << "Not enough inputs, usage is" << endl;
+         cout << "pydt mh theta datafile namesfile iterations flat seed" << endl;
+	 cout << "mh: 1 for Metropolis Hastings, 0 for slice sampling" << endl ;
+	 cout << "theta: value to use for theta. -1 for learning. " << endl; 
+	 cout << "datafile: tab separated data file (NxD)" << endl; 
+	 cout << "namesfile: names for the N objects" << endl; 
+	 cout << "iterations: number of iterations of MCMC to run" << endl; 
+	 cout << "flat: whether to use a flat initial tree rather than random binary" << endl; 
+	 cout << "seed: random seed, primarily to determine the train/test split" << endl; 
+         return 1;
+     }
      
-     //int seed = boost::lexical_cast<int>(argv[7]);
-   // std::srand ( seed );
+     int seed = boost::lexical_cast<int>(argv[7]);
+     std::srand ( seed );
   /*    for (int seed=1; seed <= 10; seed++)
     {
         std::srand ( seed );
         make_train_test(argv[1], seed);
 	}*/
-// gettingItRightMH(boost::lexical_cast<bool>(argv[1]), boost::lexical_cast<int>(argv[2]), boost::lexical_cast<int>(argv[3]));
-    //settings.theta=boost::lexical_cast<double>(argv[1]);
-    //settings.alpha=boost::lexical_cast<double>(argv[2]);
-    //settings.c=boost::lexical_cast<double>(argv[3]); */
+     // gettingItRightMH(boost::lexical_cast<bool>(argv[1]), boost::lexical_cast<int>(argv[2]), boost::lexical_cast<int>(argv[3]));
+    // settings.theta=boost::lexical_cast<double>(argv[1]);
+    // settings.alpha=boost::lexical_cast<double>(argv[2]);
+    // settings.c=boost::lexical_cast<double>(argv[3]);
 
     //depth_as_func_of_n(settings);
     //testMH();
-  test_sampler(boost::lexical_cast<bool>(argv[1]),boost::lexical_cast<int>(argv[2]),boost::lexical_cast<int>(argv[3]));
-    // data_test(boost::lexical_cast<bool>(argv[1]),boost::lexical_cast<double>(argv[2]),argv[3],argv[4],boost::lexical_cast<int>(argv[5]),boost::lexical_cast<bool>(argv[6]), seed);
+    //test_sampler(boost::lexical_cast<bool>(argv[1]),boost::lexical_cast<int>(argv[2]),boost::lexical_cast<int>(argv[3]));
+    data_test(boost::lexical_cast<bool>(argv[1]),boost::lexical_cast<double>(argv[2]),argv[3],argv[4],boost::lexical_cast<int>(argv[5]),boost::lexical_cast<bool>(argv[6]), seed);
     //TreeNode *root = KingmansCoalescent(10, settings);
     //tree_hist_kingmans(settings);
 

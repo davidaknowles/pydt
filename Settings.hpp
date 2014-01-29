@@ -42,21 +42,21 @@ public:
 
     BaseSettings() {
       debug=false; 
-        theta = 1.0;
-        alpha = 0.0;
-        sampleTheta = true;
-        sampleAlpha = true;
-        sampleC = true;
-        PoissonEventsOnFinalEdge = 3;
-        NumSamplesForImputation=3;
-        subtreeInflationFactor = 2.0;
-        ResampleAttachmentLocation = true;
-        ResampleDetachmentLocation = false;
-        //gen.seed(static_cast<unsigned int>(time(0)));
-        gen.seed(0);
-        c = 1.0;
-        starFactor = 1.1;
-        nodeWidth = 0.1;
+      theta = 1.0;
+      alpha = 0.0;
+      sampleTheta = true;
+      sampleAlpha = true;
+      sampleC = true;
+      PoissonEventsOnFinalEdge = 3;
+      NumSamplesForImputation=3;
+      subtreeInflationFactor = 2.0;
+      ResampleAttachmentLocation = true; // not used
+      ResampleDetachmentLocation = false; // not used
+       //gen.seed(static_cast<unsigned int>(time(0)));
+      gen.seed(0);
+      c = 1.0;
+      starFactor = 1.1;
+      nodeWidth = 0.1;
     }
 
     // TODO: handle simpler cases efficiently
