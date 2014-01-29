@@ -124,11 +124,12 @@ public:
       memo[n]=newH; 
       return newH; 
     } else {
-      return *f; 
+      return (*f).second; 
     }
   }
 
-  void HypersChanged(){
+  // TODO would be better to achieve this using get/set for the hypers...
+  void HypersChanged(){ 
     memo.clear(); 
   }
 
