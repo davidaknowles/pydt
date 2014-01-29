@@ -106,14 +106,31 @@ public:
         return lgamma((double)i-alpha)-lgamma((double)i+1.0+theta);
     }
 
+  std::map<int,double> memo; 
+
     // Generalised Harmonic number
-    double H(int n) // memoize?
+    double H_internal(int n) // memoize?
     {
         double result = 0;
         for (int i=1; i<=n; i++)
             result += exp(singleTerm(i));
         return result;
     }
+
+  double H(int n){
+    std::map<int,double>::iterator f = memo.find(n); 
+    if (f == memo.end()){
+      double newH=H_internal(n); 
+      memo[n]=newH; 
+      return newH; 
+    } else {
+      return *f; 
+    }
+  }
+
+  void HypersChanged(){
+    memo.clear(); 
+  }
 
     // Sample an integer between min (inclusive) and max (inclusive)
     int iRand(int min, int max)

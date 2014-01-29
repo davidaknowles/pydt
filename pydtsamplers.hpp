@@ -419,6 +419,7 @@ Tree* SliceSample(Tree* tree, list<boost::numeric::ublas::vector<double> > &x_st
 	int hypers_every = 50; 
 	if (i % hypers_every == (hypers_every-1)){
 	  SampleHypers(tree, settings);
+	  settings.HypersChanged(); 
 	  current_struct_prior=tree->LogEvidenceStructureOnly(settings); 
 	  current_time_prior=tree->LogEvidenceTimes(settings); 
 	  current_ml = tree->MarginalLikelihoodOnly(settings); // just to refresh messages
