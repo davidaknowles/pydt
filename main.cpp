@@ -211,12 +211,12 @@ void data_test(bool mh, double theta, char* datafile, char* labelsFile, int iter
     delete learntTree;
 }
 
-void test_sampler(bool mh)
+void test_sampler(bool mh,int D = 2,int numLeaves = 10)
 {
     Settings settings;
-    settings.D=2;
+    settings.D=D; 
     settings.theta = 0.0;
-    settings.debug=true; 
+    settings.debug=false; 
     TreeNode* root = new TreeNode(0.5,false);
     TreeNode* firstLeaf = new TreeNode(1,true);
     firstLeaf->label="0";
@@ -228,7 +228,6 @@ void test_sampler(bool mh)
     Tree* tree=new Tree(root, settings);
     leaves.push_back(firstLeaf);
     leaves.push_back(secondLeaf);
-    int numLeaves = 10; 
     for (int i=0; i<numLeaves-2; i++)
     {
         TreeNode* leaf = new TreeNode(1.0, true);
@@ -499,7 +498,7 @@ int main (int argc,char *argv[]) {
 
     //depth_as_func_of_n(settings);
     //testMH();
-    test_sampler(boost::lexical_cast<bool>(argv[1]));
+  test_sampler(boost::lexical_cast<bool>(argv[1]),boost::lexical_cast<int>(argv[2]),boost::lexical_cast<int>(argv[3]));
     // data_test(boost::lexical_cast<bool>(argv[1]),boost::lexical_cast<double>(argv[2]),argv[3],argv[4],boost::lexical_cast<int>(argv[5]),boost::lexical_cast<bool>(argv[6]), seed);
     //TreeNode *root = KingmansCoalescent(10, settings);
     //tree_hist_kingmans(settings);

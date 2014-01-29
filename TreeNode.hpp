@@ -189,12 +189,16 @@ public:
             for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i)
             {
                 temp *= (*i)->Msg_Normal_ParentLocation;
+		assert( (*i)->Msg_Normal_ParentLocation.Precision[0] > 0 ) ;
                 (*i)->CheckConsistency();
                 childCount++;
             }
-            if (childCount <= 1)
-                throw 1;
-            cout << temp << "=" << Marg_Location << endl;
+            assert(childCount > 1); 
+	    assert( sumVector( applyFunc(temp.GetMean() - Marg_Location.GetMean(),abs) ) < 0.001 ); 
+	    if (!isLeaf){
+	      assert( temp.Precision[0] > 0 ); 
+	      assert( Msg_Normal_Location.Precision[0] > 0 ); 
+	    }
         }
 
     }
@@ -324,6 +328,67 @@ public:
             }
         }
         return NULL; // the subtree to detach was not in the subtree rooted at this node
+    }
+
+  BranchPoint Detach(BaseSettings &settings, double &ml_change, double &time_prior_change, double &struct_prior_change)
+    {
+      BranchPoint originalPosition; 
+      ml_change=0; 
+      time_prior_change=0; 
+      struct_prior_change=0;
+      originalPosition.isExistingBranchPoint=parent->children.size()>2; 
+      if (originalPosition.isExistingBranchPoint){
+	TreeNode* atnode=parent; 
+	ml_change -= atnode->local_factor(false,settings.D); // likelihood
+	struct_prior_change -= atnode->LogEvidenceStructureOnlyUp(settings,0); // times
+	time_prior_change -= atnode->LogEvidenceTimesOnlyUp(settings,0); // structure prior
+	time_prior_change -= LocalEvidenceTimes(parent->time,settings); // remove my time likelihood contrib
+	parent->children.remove(this); 
+	originalPosition.time=parent->time; 
+	originalPosition.child=parent; 
+	originalPosition.parent=NULL;
+	parent->numDescendants -= numDescendants; 
+	parent->Marg_Location /= Msg_Normal_ParentLocation; 
+	parent->bpSweepUp(-numDescendants); 
+	ml_change += atnode->local_factor(false,settings.D);
+	time_prior_change += atnode->LogEvidenceTimesOnlyUp(settings,0); 
+	struct_prior_change += atnode->LogEvidenceStructureOnlyUp(settings,0); // numdescendants already updated 
+      } else {
+	originalPosition.parent=parent->parent;
+	if (originalPosition.parent->time!=0.0){ // i.e. if originalPosition.parent != zero
+	  ml_change -= parent->parent->local_factor(false,settings.D,parent);
+	}
+	ml_change -= parent->local_factor(false,settings.D);
+	struct_prior_change -= parent->LogEvidenceStructureOnlyUp(settings,0); 
+	time_prior_change -= LogEvidenceTimesOnlyUp(settings,0); 
+	parent->children.remove(this);
+	originalPosition.time=parent->time;
+	assert( parent->children.size() == 1 ); 
+	originalPosition.child=parent->children.front();
+	time_prior_change -= originalPosition.child->LocalEvidenceTimes(parent->time,settings); 
+	
+	originalPosition.parent->numDescendants -= numDescendants; 
+	originalPosition.parent->Marg_Location /= parent->Msg_Normal_ParentLocation; 
+	originalPosition.child->Msg_Normal_ParentLocation = SampleAverageConditional( originalPosition.child->Marg_Location / originalPosition.child->Msg_Normal_Location, originalPosition.child->time - originalPosition.parent->time); 
+	originalPosition.parent->Marg_Location *= originalPosition.child->Msg_Normal_ParentLocation; 
+	originalPosition.parent->children.remove(parent);
+	originalPosition.parent->children.push_back(originalPosition.child); 
+	originalPosition.child->parent = originalPosition.parent; 
+	originalPosition.parent->bpSweepUp(-numDescendants); 
+	if (originalPosition.parent->time==0.0){
+	  boost::numeric::ublas::vector<double> zeros(settings.D);
+	  zeros &= 0.0;
+	  ml_change += sumVector(originalPosition.child->Msg_Normal_ParentLocation.GetLogProb(zeros)); 
+	} else {
+	  ml_change += originalPosition.parent->local_factor(false,settings.D); 
+	}
+	struct_prior_change += originalPosition.parent->LogEvidenceStructureOnlyUp(settings,0); 
+	time_prior_change += originalPosition.child->LogEvidenceTimesOnlyUp(settings,0); 
+	delete parent; 
+	parent=NULL; 
+	// I THINK the message down into op.child is unchanged...
+      }
+      return originalPosition; 
     }
 
     // Initialise messages before performing a sweep of BP
@@ -947,7 +1012,7 @@ public:
       double lnEvidence = 0.0; 
       if (parent != NULL) { // i.e. stop at zero!
 	numDescendants += additional_descendants; 
-	cout << "Up: " << LocalEvidenceStructure(settings) << "add: " << additional_descendants << endl; 
+	//cout << "Up: " << LocalEvidenceStructure(settings) << "add: " << additional_descendants << endl; 
 	lnEvidence += LocalEvidenceStructure(settings); 
 	lnEvidence += parent->LogEvidenceStructureOnlyUp(settings,additional_descendants);
 	numDescendants -= additional_descendants; 
@@ -961,7 +1026,7 @@ public:
       if (parent != NULL) { // i.e. stop at zero!
 	numDescendants += additional_descendants; 
 	lnEvidence += LocalEvidenceTimes(parent->time,settings); 
-	cout << "Time up: " << LocalEvidenceTimes(parent->time,settings) << " add " << additional_descendants << endl; 
+	// cout << "Time up: " << LocalEvidenceTimes(parent->time,settings) << " add " << additional_descendants << endl; 
 	lnEvidence += parent->LogEvidenceTimesOnlyUp(settings,additional_descendants);
 	numDescendants -= additional_descendants; 
       }
@@ -972,7 +1037,7 @@ public:
     double LogEvidenceTimes(double parent_time, BaseSettings &settings)
     {
       double lnEvidence = LocalEvidenceTimes(parent_time,settings); 
-      cout << "time: " << time << " parent: " << parent_time << " ev: " << lnEvidence << endl; 
+      //cout << "time: " << time << " parent: " << parent_time << " ev: " << lnEvidence << endl; 
       if (!isLeaf)
 	for (list<TreeNode*>::iterator i=children.begin(); i != children.end(); ++i)
 	  lnEvidence += (*i)->LogEvidenceTimes(time, settings);
@@ -1505,7 +1570,7 @@ void BranchPoint::AttachSubtree(TreeNode* subtree, BaseSettings& settings)
 	subtree->bpSweepDown(*child); // this will update subtree->Msg_Normal_Location
         // optionally we resample the location of the parent since the addition of the subtree may have a
         // large effect on its location
-        if (settings.ResampleAttachmentLocation){
+        if (0) { // (settings.ResampleAttachmentLocation){
             GaussianVector marg=SampleAverageConditional(parent->Marg_Location, child->time - parent->time);
             for (list<TreeNode*>::iterator i=child->children.begin(); i != child->children.end(); ++i)
 	      marg *= SampleAverageConditional((*i)->Marg_Location, (*i)->time-child->time);
@@ -1540,9 +1605,11 @@ void BranchPoint::AttachSubtree(TreeNode* subtree, BaseSettings& settings)
 	  new_node->Msg_Normal_Location = SampleAverageConditional(wp_to_norm, new_node->time - parent->time);
 	  GaussianVector wc_to_norm = child->Marg_Location / child->Msg_Normal_Location; 
 	  subtree->Msg_Normal_ParentLocation = SampleAverageConditional(subtree->Marg_Location / subtree->Msg_Normal_Location, subtree->time - new_node->time);
+	  parent->Marg_Location /= child->Msg_Normal_ParentLocation; 
 	  child->Msg_Normal_ParentLocation = SampleAverageConditional(wc_to_norm, child->time - new_node->time); 
 	  new_node->Marg_Location = new_node->Msg_Normal_Location * subtree->Msg_Normal_ParentLocation * child->Msg_Normal_ParentLocation;
 	  new_node->Msg_Normal_ParentLocation = SampleAverageConditional(subtree->Msg_Normal_ParentLocation * child->Msg_Normal_ParentLocation, new_node->time - parent->time); 
+	  parent->Marg_Location *= new_node->Msg_Normal_ParentLocation;
 	  child->Marg_Location /= child->Msg_Normal_Location; 
 	  child->Msg_Normal_Location = SampleAverageConditional(new_node->Msg_Normal_Location * subtree->Msg_Normal_ParentLocation, child->time - new_node->time);
 	  child->Marg_Location *= child->Msg_Normal_Location;

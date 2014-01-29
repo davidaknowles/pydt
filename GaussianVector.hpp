@@ -86,7 +86,7 @@ public:
 
     void SetMeanAndVariance(vector<double> mean, vector<double> variance)
     {
-        isPoint = std::accumulate( variance.begin(), variance.end(), 0.0 ) == 0.0;
+      isPoint = sumVector(variance)==0.0; 
         if (isPoint)
             MeanTimesPrecision = mean;
         else
